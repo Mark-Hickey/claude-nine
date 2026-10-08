@@ -5,6 +5,7 @@ My Claude Code mods. Each folder is one mod: a plugin of hooks that Claude Code 
 | Mod | What it does |
 |---|---|
 | `linear-watch` | Checks the Linear tickets assigned to me every hour. Shows a ticket line above the prompt, a toast when a ticket is new or changes status, and a `/tickets` command and pane. |
+| `mesh-toast` | Every minute, peeks at my cortex mesh inbox and shows a toast for each new message. It uses `--peek`, so it never marks a message as read. |
 | `repo-sync` | Every 14 hours, runs `bin/repo-sync` and shows a toast with what it updated. |
 
 `bin/repo-sync` updates every repo under `~/projects/<owner>/<repo>`. It only fast-forwards a repo
@@ -28,3 +29,6 @@ claude plugin test linear-watch
 
 `linear-watch` reads Linear through the Linear connector (`mcp__plugin_design_linear__list_issues`).
 Without that connector, it shows "Linear: check failed".
+
+`mesh-toast` reads the inbox through the `cortex-join` plugin's `cortex-mesh.py`. Without that plugin,
+it shows nothing.
