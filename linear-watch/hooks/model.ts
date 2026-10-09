@@ -1,5 +1,5 @@
 // Status interpretation for tickets and PRs: no engine calls, so every rule here is tested directly.
-import type { Actor, Check, Issue, Pr, PrState, Reviews, Update } from '../types'
+import type { Actor, Check, Issue, Pr, PrState, Reviews, Step, StepState, Update } from '../types'
 
 // How each PR state reads. Every state has a glyph AND a word, so colour is never the only signal.
 // Green done, cyan ready, yellow waiting, red someone must fix, gray inactive or unknown.
@@ -51,10 +51,13 @@ export type GhPr = {
   mergeStateStatus?: string | null
   reviewRequests?: { login?: string; name?: string; slug?: string }[]
   latestReviews?: { author?: { login?: string } | null; state?: string }[]
+  createdAt?: string | null
+  mergedAt?: string | null
+  closedAt?: string | null
   statusCheckRollup?: { name?: string | null; context?: string | null; status?: string | null; conclusion?: string | null; state?: string | null; detailsUrl?: string | null; targetUrl?: string | null }[]
 }
 
-export const GH_FIELDS = 'state,isDraft,title,author,reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews,statusCheckRollup'
+export const GH_FIELDS = 'state,isDraft,title,author,reviewDecision,mergeable,mergeStateStatus,reviewRequests,latestReviews,statusCheckRollup,createdAt,mergedAt,closedAt'
 
 const FAILED = ['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE']
 
@@ -118,6 +121,9 @@ export function prFromGh(ref: { repo: string; number: number; url: string }, gh:
   if (gh.author?.login) pr.author = gh.author.login
   if (gh.mergeStateStatus) pr.mergeState = gh.mergeStateStatus
   if (ticket) pr.ticket = ticket
+  if (gh.createdAt) pr.createdAt = gh.createdAt
+  if (gh.mergedAt) pr.mergedAt = gh.mergedAt
+  if (gh.closedAt) pr.closedAt = gh.closedAt
   return pr
 }
 
@@ -391,4 +397,134 @@ export function toastsFor(updates: Update[]): { text: string; timeoutMs: number 
     return [{ text: `${loud.length} ticket and PR updates${important > 0 ? `, ${important} important` : ''} · /prs or /tickets to see them`, timeoutMs: 8000 }]
   }
   return loud.map(u => ({ text: u.text, timeoutMs: u.level === 'important' ? 8000 : 4000 }))
+}
+
+// --- Stages: how far each ticket and PR has got --------------------------------------------
+
+// How each stage state reads. Like the PR states, every one has a glyph and a colour.
+export const STEP_LOOK: Record<StepState, { glyph: string; color: string; word: string }> = {
+  done: { glyph: '✓', color: 'green', word: 'done' },
+  now: { glyph: '●', color: 'cyan', word: 'now' },
+  waiting: { glyph: '◷', color: 'yellow', word: 'waiting' },
+  failed: { glyph: '✕', color: 'red', word: 'blocked' },
+  todo: { glyph: '○', color: 'gray', word: 'not yet' },
+  na: { glyph: '–', color: 'gray', word: 'not used' },
+}
+
+const TYPE_RANK: Record<string, number> = { triage: 0, backlog: 1, unstarted: 2, started: 3, completed: 4, canceled: 4, duplicate: 4 }
+
+// A ticket's stages from Linear: the states it went through, in workflow order, then Done.
+// Backlog and Todo show only when the ticket was in them; a started state shows once each.
+export function ticketSteps(i: Issue): Step[] {
+  const history = i.history ?? []
+  const current = TYPE_RANK[i.statusType] ?? 3
+  const first = (name: string) => history.find(h => h.name === name)?.at
+  const names: { name: string; type: string }[] = []
+  for (const h of [...history].sort((a, b) => (TYPE_RANK[a.type] ?? 3) - (TYPE_RANK[b.type] ?? 3))) {
+    if ((TYPE_RANK[h.type] ?? 3) >= 4) continue
+    if (!names.some(n => n.name === h.name)) names.push({ name: h.name, type: h.type })
+  }
+  if (current < 4 && !names.some(n => n.name === i.status)) names.push({ name: i.status, type: i.statusType })
+  names.sort((a, b) => (TYPE_RANK[a.type] ?? 3) - (TYPE_RANK[b.type] ?? 3))
+  // Within started states, the order they were first entered.
+  const steps: Step[] = names.map(n => {
+    const rank = TYPE_RANK[n.type] ?? 3
+    const isNow = n.name === i.status && current < 4
+    const before = rank < current || (rank === current && !isNow && (first(n.name) ?? '') < (first(i.status) ?? '~'))
+    const state: StepState = isNow ? 'now' : before || current >= 4 ? 'done' : 'todo'
+    const at = first(n.name)
+    return at ? { label: n.name, state, at } : { label: n.name, state }
+  })
+  const end = i.statusType === 'canceled' || i.statusType === 'duplicate' ? i.status : 'Done'
+  const endState: StepState = i.statusType === 'completed' ? 'done' : current >= 4 ? 'failed' : 'todo'
+  const endAt = current >= 4 ? first(i.status) : undefined
+  steps.push(endAt ? { label: end, state: endState, at: endAt } : { label: end, state: endState })
+  return steps
+}
+
+// A PR's stages: out of draft, CI, review, mergeable, merged. Each from what GitHub said.
+export function prSteps(pr: Pr): Step[] {
+  const merged = pr.state === 'merged'
+  const closed = pr.state === 'closed'
+  const checks = pr.checks
+  const ci: StepState = merged ? 'done'
+    : checks === undefined ? 'todo'
+    : checks.length === 0 ? 'na'
+    : checks.some(c => c.outcome === 'failed') ? 'failed'
+    : checks.some(c => c.outcome === 'running') ? 'now'
+    : 'done'
+  const r = pr.reviews
+  const review: StepState = merged ? 'done'
+    : r === undefined ? 'todo'
+    : r.changesBy.length > 0 ? 'failed'
+    : r.approvedBy.length > 0 || pr.state === 'ready' ? 'done'
+    : pr.state === 'draft' ? 'todo'
+    : 'waiting'
+  const merge: StepState = merged ? 'done'
+    : closed ? 'na'
+    : pr.state === 'conflict' ? 'failed'
+    : pr.state === 'behind' || pr.state === 'blocked' ? 'waiting'
+    : pr.mergeable === 'yes' && pr.state === 'ready' ? 'now'
+    : 'todo'
+  const open: StepState = pr.state === 'draft' ? 'now' : 'done'
+  const last: Step = merged ? (pr.mergedAt ? { label: 'Merged', state: 'done', at: pr.mergedAt } : { label: 'Merged', state: 'done' })
+    : closed ? (pr.closedAt ? { label: 'Closed', state: 'failed', at: pr.closedAt } : { label: 'Closed', state: 'failed' })
+    : { label: 'Merged', state: 'todo' }
+  return [
+    pr.createdAt ? { label: 'Open', state: open, at: pr.createdAt } : { label: 'Open', state: open },
+    { label: 'CI', state: ci },
+    { label: 'Review', state: review },
+    { label: 'Merge', state: merge },
+    last,
+  ]
+}
+
+// The stage that matters now: the first not done, or the last when all are.
+export function currentStep(steps: Step[]): Step | undefined {
+  return steps.find(s => s.state !== 'done' && s.state !== 'na') ?? steps[steps.length - 1]
+}
+
+// Stages as text, fitted: "✓ Backlog → ✓ Todo → ● In Review → ○ Done", or "✓✓●○ In Review".
+export function stepsLine(steps: Step[], columns: number): string {
+  const full = steps.map(s => `${STEP_LOOK[s.state].glyph} ${s.label}`).join(' → ')
+  if (full.length <= columns) return full
+  const mid = steps.map(s => `${STEP_LOOK[s.state].glyph} ${s.label}`).join(' ')
+  if (mid.length <= columns) return mid
+  const cur = currentStep(steps)
+  return fit(`${steps.map(s => STEP_LOOK[s.state].glyph).join('')}${cur ? ` ${cur.label}` : ''}`, columns)
+}
+
+// How long a ticket has been in its current state: "4d", from its history.
+export function inStateFor(i: Issue, now: number): string | undefined {
+  const at = [...(i.history ?? [])].reverse().find(h => h.name === i.status)?.at
+  if (at === undefined) return undefined
+  return ago(Date.parse(at), now).replace(' ago', '').replace('just now', '<1m')
+}
+
+// When a PR last moved: "merged 3d ago", "closed 1h ago", "open 4d".
+export function prWhen(pr: Pr, now: number): string | undefined {
+  if (pr.mergedAt) return `merged ${ago(Date.parse(pr.mergedAt), now)}`
+  if (pr.closedAt) return `closed ${ago(Date.parse(pr.closedAt), now)}`
+  if (pr.createdAt) return `open ${ago(Date.parse(pr.createdAt), now).replace(' ago', '')}`
+  return undefined
+}
+
+// Words to lines of at most `columns`, at most `max` lines, the last cut with an ellipsis.
+export function wrapLines(text: string, columns: number, max: number): string[] {
+  const out: string[] = []
+  let line = ''
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (line === '') line = word
+    else if (line.length + 1 + word.length <= columns) line += ` ${word}`
+    else {
+      out.push(line)
+      line = word
+    }
+  }
+  if (line !== '') out.push(line)
+  const lines = out.map(l => fit(l, columns))
+  if (lines.length <= max) return lines
+  const kept = lines.slice(0, max)
+  kept[max - 1] = fit(`${kept[max - 1]} ${lines.slice(max).join(' ')}`, columns)
+  return kept
 }

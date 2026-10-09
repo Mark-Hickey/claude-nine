@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { Issue, Pr } from '../types'
 import {
-  KEY_ORDER, PR_LOOK, changes, ciText, classifyPr, groupPrs, isOpen, keyFor, mergeText, nextText, prFromGh, prRefs,
+  KEY_ORDER, PR_LOOK, changes, prSteps, stepsLine, ticketSteps, wrapLines, ciText, classifyPr, groupPrs, isOpen, keyFor, mergeText, nextText, prFromGh, prRefs,
   prSummary, reviewText, rowCells, snapshotOf, ticketLine, toastsFor,
 } from './model'
 import type { GhPr } from './model'
@@ -195,4 +195,54 @@ test('linked PRs come from GitHub pull links in the attachments, once each', () 
   ])
   expect(refs.map(r => `${r.repo}#${r.number}`)).toEqual(['unsigned-gg/unsigned-onboard#7', 'unsigned-gg/site#152'])
   expect(refs[1]?.url).toBe('https://github.com/unsigned-gg/site/pull/152')
+})
+
+describe('stages', () => {
+  const marks = (steps: { label: string; state: string }[]) => steps.map(s => `${s.state}:${s.label}`)
+  const h = (name: string, type: string, at: string) => ({ name, type, at })
+
+  test('a ticket\'s stages come from its real history: OPS-1608 went Backlog, Todo, Backlog, In Review', () => {
+    const t = { ...issue('OPS-1608', 'In Review', 'started'), history: [h('Backlog', 'backlog', '2026-10-05T15:44Z'), h('Todo', 'unstarted', '2026-10-05T21:50Z'), h('Backlog', 'backlog', '2026-10-05T21:51Z'), h('In Review', 'started', '2026-10-05T22:57Z')] }
+    expect(marks(ticketSteps(t))).toEqual(['done:Backlog', 'done:Todo', 'now:In Review', 'todo:Done'])
+  })
+
+  test('started states show in the order entered, and a finished ticket is done all the way', () => {
+    const hist = [h('Todo', 'unstarted', '1'), h('In Progress', 'started', '2'), h('In Review', 'started', '3')]
+    expect(marks(ticketSteps({ ...issue('A', 'In Review', 'started'), history: hist }))).toEqual(['done:Todo', 'done:In Progress', 'now:In Review', 'todo:Done'])
+    expect(marks(ticketSteps({ ...issue('A', 'Done', 'completed'), history: [...hist, h('Done', 'completed', '4')] }))).toEqual(['done:Todo', 'done:In Progress', 'done:In Review', 'done:Done'])
+    expect(marks(ticketSteps({ ...issue('A', 'Canceled', 'canceled'), history: [h('Todo', 'unstarted', '1'), h('Canceled', 'canceled', '2')] }))).toEqual(['done:Todo', 'failed:Canceled'])
+  })
+
+  test('without history a ticket still shows where it is', () => {
+    expect(marks(ticketSteps(issue('A', 'In Progress', 'started')))).toEqual(['now:In Progress', 'todo:Done'])
+  })
+
+  test('each PR state lights its stages honestly', () => {
+    const at = (gh: GhPr) => marks(prSteps(pr('o/r', 1, gh)))
+    expect(at({ state: 'OPEN', reviewDecision: 'APPROVED', mergeStateStatus: 'CLEAN', statusCheckRollup: green })).toEqual(['done:Open', 'done:CI', 'done:Review', 'now:Merge', 'todo:Merged'])
+    expect(at({ state: 'OPEN', reviewDecision: 'REVIEW_REQUIRED', statusCheckRollup: green })).toEqual(['done:Open', 'done:CI', 'waiting:Review', 'todo:Merge', 'todo:Merged'])
+    expect(at({ state: 'OPEN', statusCheckRollup: [{ name: 'a', status: 'COMPLETED', conclusion: 'FAILURE' }] })).toEqual(['done:Open', 'failed:CI', 'waiting:Review', 'todo:Merge', 'todo:Merged'])
+    expect(at({ state: 'OPEN', reviewDecision: 'CHANGES_REQUESTED', latestReviews: [{ author: { login: 'x' }, state: 'CHANGES_REQUESTED' }], statusCheckRollup: green })).toEqual(['done:Open', 'done:CI', 'failed:Review', 'todo:Merge', 'todo:Merged'])
+    expect(at({ state: 'OPEN', reviewDecision: 'APPROVED', mergeable: 'CONFLICTING', latestReviews: [{ author: { login: 'x' }, state: 'APPROVED' }], statusCheckRollup: green })).toEqual(['done:Open', 'done:CI', 'done:Review', 'failed:Merge', 'todo:Merged'])
+    expect(at({ state: 'OPEN', isDraft: true, statusCheckRollup: [] })).toEqual(['now:Open', 'na:CI', 'todo:Review', 'todo:Merge', 'todo:Merged'])
+    expect(at({ state: 'MERGED', mergedAt: '2026-10-06T13:44:54Z' })).toEqual(['done:Open', 'done:CI', 'done:Review', 'done:Merge', 'done:Merged'])
+    // Closed with no checks reported: CI is not used, not passed.
+    expect(at({ state: 'CLOSED' })).toEqual(['done:Open', 'na:CI', 'waiting:Review', 'na:Merge', 'failed:Closed'])
+    expect(marks(prSteps({ repo: 'o/r', number: 1, url: 'u', state: 'unknown' }))).toEqual(['done:Open', 'todo:CI', 'todo:Review', 'todo:Merge', 'todo:Merged'])
+  })
+
+  test('the stages line folds to fit: arrows, then no arrows, then glyphs and the current stage', () => {
+    const steps = prSteps(pr('o/r', 1, { state: 'OPEN', reviewDecision: 'APPROVED', mergeStateStatus: 'CLEAN', statusCheckRollup: green }))
+    expect(stepsLine(steps, 80)).toBe('✓ Open → ✓ CI → ✓ Review → ● Merge → ○ Merged')
+    expect(stepsLine(steps, 40)).toBe('✓ Open ✓ CI ✓ Review ● Merge ○ Merged')
+    expect(stepsLine(steps, 20)).toBe('✓✓✓●○ Merge')
+  })
+
+  test('titles wrap on words to at most n lines, the last one cut', () => {
+    expect(wrapLines('onboard rolematrix: fix false "safest profile" comment on ProfileFor and add tests', 30, 2)).toEqual([
+      'onboard rolematrix: fix false',
+      '"safest profile" comment on P…',
+    ])
+    expect(wrapLines('short', 30, 2)).toEqual(['short'])
+  })
 })

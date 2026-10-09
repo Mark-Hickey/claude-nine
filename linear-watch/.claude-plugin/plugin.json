@@ -1,6 +1,6 @@
 {
   "name": "linear-watch",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Linear Watch + PR Watch: your Linear tickets and their PRs above the prompt, hourly. /tickets and /prs panes, compact and expanded modes, toasts on real changes.",
   "types": "./types/index.d.ts",
   "author": {

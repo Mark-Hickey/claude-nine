@@ -37,7 +37,19 @@ export type Pr = {
   mergeState?: string
   // The ticket the PR is linked from.
   ticket?: string
+  // ISO times from GitHub, for "open 4d" and "merged 2h ago".
+  createdAt?: string
+  mergedAt?: string
+  closedAt?: string
 }
+
+// One Linear state a ticket was in, and when it entered it (from Linear's state history).
+export type StateVisit = { name: string; type: string; at: string }
+
+// One stage of a ticket or PR: done, the one it is in now, waiting on someone,
+// failed or blocked, not reached yet, or not used here.
+export type StepState = 'done' | 'now' | 'waiting' | 'failed' | 'todo' | 'na'
+export type Step = { label: string; state: StepState; at?: string }
 
 export type Issue = {
   id: string
@@ -49,6 +61,8 @@ export type Issue = {
   project?: string
   updatedAt?: string
   prs?: Pr[]
+  // The states it went through, oldest first, when Linear gives them.
+  history?: StateVisit[]
 }
 
 // compact: the band is one line and pane rows have no details. expanded: both show more.

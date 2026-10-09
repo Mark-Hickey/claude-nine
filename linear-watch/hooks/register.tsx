@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Health, Issue, Mode, Pr, Update } from '../types'
-import { GH_FIELDS, prFromGh, prRefs, allPrs, byUrgency, changes, groupPrs, isOpen, keyFor, nextActor, prName, rowCells, snapshotOf, toastsFor } from './model'
+import type { Health, Issue, Mode, Pr, StateVisit, Update } from '../types'
+import { GH_FIELDS, STEP_LOOK, prFromGh, prRefs, allPrs, byUrgency, changes, groupPrs, inStateFor, isOpen, keyFor, nextActor, prName, prSteps, prWhen, rowCells, snapshotOf, stepsLine, ticketSteps, toastsFor } from './model'
 import type { GhPr, Snapshot } from './model'
 import { band, cardRows, keyChart, paneHeader, rowsOf, prGroups, recent, ticketBlock, toolbar } from './view'
 
@@ -36,35 +36,54 @@ const byTicketUrgency = (a: Issue, b: Issue) => {
 }
 
 // The plain-text lists the commands return: for terminals too narrow for a pane, and for scrollback.
-export function ticketsText(open: Issue[], me: string | null, columns = 100): string {
+// Each ticket and PR has a stages line, so how far it has got reads without the pane.
+export function ticketsText(open: Issue[], me: string | null, now: number, columns = 100): string {
   if (open.length === 0) return 'No open Linear tickets assigned to you.'
   const blocks = open.map(i => {
-    const cells = rowCells(i.prs ?? [], me, columns - 2)
-    const prs = (i.prs ?? []).map((pr, n) => {
+    const prs = [...(i.prs ?? [])].sort(byUrgency)
+    const cells = rowCells(prs, me, columns - 2)
+    const since = inStateFor(i, now)
+    const rows = prs.flatMap((pr, n) => {
       const c = cells[n]
-      return c ? `  ${c.glyph} ${c.name}  ${c.state}${c.showCi ? `  ${c.ci}` : ''}${c.showNext ? `  ${c.next}` : ''}`.trimEnd() : `  ${prName(pr)}`
+      const head = c ? `  ${c.glyph} ${c.name}  ${c.state}${c.showCi ? `  ${c.ci}` : ''}${c.showNext ? `  ${c.next}` : ''}`.trimEnd() : `  ${prName(pr)}`
+      const when = prWhen(pr, now)
+      return [head, `      ${stepsLine(prSteps(pr), columns - 6)}${when ? ` · ${when}` : ''}`]
     })
-    return [`◆ ${i.id}  ${i.status}`, `  ${i.title}`, ...(prs.length > 0 ? prs : ['  No linked PRs']), `  ${i.url}`].join('\n')
+    return [
+      `◆ ${i.id}  ${i.status}${since ? ` · ${since}` : ''}`,
+      `  ${i.title}`,
+      `  ${stepsLine(ticketSteps(i), columns - 2)}`,
+      ...(rows.length > 0 ? rows : ['  No linked PRs']),
+      `  ${i.url}`,
+    ].join('\n')
   })
-  const key = keyFor(open)
-  const legend = key.length > 0 ? `\n\nKey:\n${key.map(k => `  ${k}`).join('\n')}` : ''
-  return blocks.join('\n\n') + legend
+  return blocks.join('\n\n') + legend(open)
 }
 
-export function prsText(open: Issue[], me: string | null, columns = 100): string {
+export function prsText(open: Issue[], me: string | null, now: number, columns = 100): string {
   const prs = allPrs(open)
   if (prs.length === 0) return 'No pull requests are linked to your open Linear tickets.'
-  return groupPrs(prs, me)
-    .map(g => {
-      const cells = rowCells(g.prs, me, columns - 2)
-      const rows = g.prs.map((pr, n) => {
-        const c = cells[n]
-        const line = c ? `  ${c.glyph} ${c.name}  ${c.state}${c.showCi ? `  ${c.ci}` : ''}${c.showNext ? `  ${c.next}` : ''}`.trimEnd() : `  ${prName(pr)}`
-        return `${line}\n    ${pr.ticket ? `${pr.ticket} · ` : ''}${pr.url}`
+  return (
+    groupPrs(prs, me)
+      .map(g => {
+        const cells = rowCells(g.prs, me, columns - 2)
+        const rows = g.prs.map((pr, n) => {
+          const c = cells[n]
+          const line = c ? `  ${c.glyph} ${c.name}  ${c.state}${c.showCi ? `  ${c.ci}` : ''}${c.showNext ? `  ${c.next}` : ''}`.trimEnd() : `  ${prName(pr)}`
+          const when = prWhen(pr, now)
+          return [line, `      ${stepsLine(prSteps(pr), columns - 6)}${when ? ` · ${when}` : ''}`, `      ${pr.ticket ? `${pr.ticket} · ` : ''}${pr.url}`].join('\n')
+        })
+        return [`${g.title} (${g.prs.length})`, ...rows].join('\n')
       })
-      return [`${g.title} (${g.prs.length})`, ...rows].join('\n')
-    })
-    .join('\n\n')
+      .join('\n\n') + legend(open)
+  )
+}
+
+// The key at the end of the text lists: the PR states in use, then the stage marks.
+function legend(open: Issue[]): string {
+  const key = keyFor(open)
+  const marks = (['done', 'now', 'waiting', 'failed', 'todo'] as const).map(s => `${STEP_LOOK[s].glyph} ${STEP_LOOK[s].word}`).join('  ')
+  return `\n\nKey:\n${key.map(k => `  ${k}`).join('\n')}${key.length > 0 ? '\n' : ''}  Stages: ${marks}`
 }
 
 // The status line: open tickets, and how many PRs wait on you.
@@ -130,17 +149,20 @@ async function fetchIssues($: EngineInterface): Promise<Issue[]> {
   })
 }
 
-// The PRs linked to one ticket, each with its state on GitHub. A ticket Linear cannot read
-// keeps no PRs; a PR gh cannot read is kept, honestly, as 'unknown'.
-async function fetchPrs($: EngineInterface, ticket: string): Promise<Pr[]> {
-  let refs: ReturnType<typeof prRefs>
+// One ticket's details: its linked PRs, each with its state on GitHub, and the states it went
+// through. A ticket Linear cannot read keeps no PRs; a PR gh cannot read is kept, honestly, as 'unknown'.
+async function fetchDetail($: EngineInterface, ticket: string): Promise<{ prs: Pr[]; history?: StateVisit[] }> {
+  let raw: { attachments?: { url?: string }[]; stateHistory?: { state?: { name?: string; type?: string }; startedAt?: string }[] }
   try {
-    refs = prRefs(JSON.parse(await linearCall($, 'get_issue', { id: ticket })).attachments ?? [])
+    raw = JSON.parse(await linearCall($, 'get_issue', { id: ticket }))
   } catch {
-    return []
+    return { prs: [] }
   }
-  return Promise.all(
-    refs.map(async ref => {
+  const history = (raw.stateHistory ?? []).flatMap(h =>
+    h.state?.name && h.startedAt ? [{ name: h.state.name, type: h.state.type ?? '', at: h.startedAt }] : [],
+  )
+  const prs = await Promise.all(
+    prRefs(raw.attachments ?? []).map(async ref => {
       try {
         const gh = await $.process.run(['gh', 'pr', 'view', String(ref.number), '-R', ref.repo, '--json', GH_FIELDS], { timeoutMs: 20_000 })
         if (gh.exitCode === 0) return prFromGh(ref, JSON.parse(gh.stdout) as GhPr, ticket)
@@ -150,6 +172,7 @@ async function fetchPrs($: EngineInterface, ticket: string): Promise<Pr[]> {
       return { ...ref, state: 'unknown' as const, ticket }
     }),
   )
+  return history.length > 0 ? { prs, history } : { prs }
 }
 
 // The GitHub login gh is signed in as, read once; null when gh cannot say.
@@ -185,7 +208,7 @@ async function run($: EngineInterface): Promise<Issue[] | null> {
       return null
     }
     const me = await myLogin($)
-    const open = (await Promise.all(issues.filter(isOpen).map(async i => ({ ...i, prs: await fetchPrs($, i.id) })))).sort(byTicketUrgency)
+    const open = (await Promise.all(issues.filter(isOpen).map(async i => ({ ...i, ...(await fetchDetail($, i.id)) })))).sort(byTicketUrgency)
     const now = await $.clock.now()
 
     // Compare with what the last check saw. A missing snapshot (first run) toasts nothing.
@@ -232,7 +255,8 @@ async function runCommand($: EngineInterface, args: string, command: 'tickets' |
   const open = await check($)
   if (open === null) return { text: `Could not reach Linear: ${(await read($, healthAtom)).lastError ?? 'no answer'}.${note}` }
   const me = await myLogin($)
-  return { text: (command === 'tickets' ? ticketsText(open, me) : prsText(open, me)) + note }
+  const now = await $.clock.now()
+  return { text: (command === 'tickets' ? ticketsText(open, me, now) : prsText(open, me, now)) + note }
 }
 
 // The pane toolbar's actions: each one real, each one the same in both panes.
@@ -281,15 +305,16 @@ export const register: Register = on => {
     const [open, mode, health, checking, updates, me, now] = await Promise.all([
       read($, openIssues), read($, modeAtom), read($, healthAtom), read($, checkingAtom), read($, updatesAtom), myLogin($), $.clock.now(),
     ])
-    const columns = e.viewport?.columns ?? 100
+    // The pane's own body width: docked beside the transcript it is far narrower than the terminal.
+    const columns = e.props.bodyColumns ?? e.viewport?.columns ?? 100
     return (
       <Box flexDirection="column">
-        {paneHeader(ui, 'Linear Tickets', `${open.length} open`, health, checking, now)}
-        {toolbar(ui, mode.pane, mode.key, actions($, TICKETS))}
+        {paneHeader(ui, 'Linear Tickets', `${open.length} open`, health, checking, now, columns)}
         {open.length === 0 && <Text dimColor>No open Linear tickets assigned to you.</Text>}
-        {open.map(i => ticketBlock(ui, i, me, columns, mode.pane))}
+        {open.map(i => ticketBlock(ui, i, me, columns, mode.pane, now))}
         {mode.pane === 'expanded' && recent(ui, updates, now, columns, () => true)}
         {mode.key && keyChart(ui, columns)}
+        {toolbar(ui, mode.pane, mode.key, actions($, TICKETS))}
       </Box>
     )
   })
@@ -300,17 +325,17 @@ export const register: Register = on => {
     const [open, mode, health, checking, updates, me, now] = await Promise.all([
       read($, openIssues), read($, modeAtom), read($, healthAtom), read($, checkingAtom), read($, updatesAtom), myLogin($), $.clock.now(),
     ])
-    const columns = e.viewport?.columns ?? 100
+    const columns = e.props.bodyColumns ?? e.viewport?.columns ?? 100
     const prs = allPrs(open)
     const mine = prs.filter(pr => nextActor(pr, me) === 'you').length
     return (
       <Box flexDirection="column">
-        {paneHeader(ui, 'Pull Requests', `${prs.length} tracked · ${mine} need${mine === 1 ? 's' : ''} you`, health, checking, now)}
-        {toolbar(ui, mode.pane, mode.key, actions($, PRS))}
+        {paneHeader(ui, 'Pull Requests', `${prs.length} tracked${mine > 0 ? ` · ${mine} need${mine === 1 ? 's' : ''} you` : ''}`, health, checking, now, columns)}
         {prs.length === 0 && <Text dimColor>No pull requests are linked to your open Linear tickets.</Text>}
-        {prGroups(ui, prs, me, columns, mode.pane)}
+        {prGroups(ui, prs, me, columns, mode.pane, now)}
         {mode.pane === 'expanded' && recent(ui, updates, now, columns, u => u.pr !== undefined)}
         {mode.key && keyChart(ui, columns)}
+        {toolbar(ui, mode.pane, mode.key, actions($, PRS))}
       </Box>
     )
   })

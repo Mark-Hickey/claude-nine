@@ -30,6 +30,19 @@ In both panes: `e` expand or compact, `r` refresh, `k` show the key of symbols, 
 close. `/tickets compact` and `/tickets expand` set the view above the prompt. The mod keeps your
 choices between sessions.
 
+## Stages: how far each ticket and PR has got
+
+Each ticket and each PR has a line of stages. Each stage shows `✓` done, `●` now, `◷` waiting,
+`✕` blocked, `○` not yet or `–` not used.
+
+- **Ticket:** `✓ Backlog → ✓ Todo → ● In Review → ○ Done · for 4d`. The stages come from the
+  real state history of the ticket in Linear.
+- **PR:** `✓ Open → ✓ CI → ✓ Review → ● Merge → ○ Merged · open 3d`.
+
+When there is not sufficient width, the line becomes shorter: `✓✓✓●○ Merge`. The panes use the
+width of the pane, not of the terminal. Thus a pane docked at the side of the terminal does not
+go past its edge.
+
 ## How it decides a PR state
 
 A PR is **Ready** only when its checks pass, its reviews approve it, and GitHub says it can merge.

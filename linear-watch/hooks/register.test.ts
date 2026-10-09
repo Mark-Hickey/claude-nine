@@ -6,9 +6,15 @@ import { modeArg, prsText, statusText, ticketsText } from './register'
 import { prFromGh } from './model'
 
 const ISSUES = { issues: [{ id: 'OPS-1608', title: 'fix the rolematrix comment', status: 'In Review', statusType: 'started', url: 'https://linear.app/c/issue/OPS-1608', priority: { value: 3, name: 'Medium' } }] }
-const ATTACH = { attachments: [{ url: 'https://github.com/unsigned-gg/site/pull/152' }, { url: 'https://github.com/unsigned-gg/api/pull/87' }] }
+const HISTORY = [
+  { state: { name: 'Backlog', type: 'backlog' }, startedAt: '2026-10-05T15:44:16.125Z' },
+  { state: { name: 'Todo', type: 'unstarted' }, startedAt: '2026-10-05T21:50:56.438Z' },
+  { state: { name: 'Backlog', type: 'backlog' }, startedAt: '2026-10-05T21:51:01.457Z' },
+  { state: { name: 'In Review', type: 'started' }, startedAt: '2026-10-05T22:57:06.945Z' },
+]
+const ATTACH = { attachments: [{ url: 'https://github.com/unsigned-gg/site/pull/152' }, { url: 'https://github.com/unsigned-gg/api/pull/87' }], stateHistory: HISTORY }
 const GH: Record<string, unknown> = {
-  '152': { state: 'OPEN', title: 'docs: fix comment', author: { login: 'Mark-Hickey' }, reviewDecision: 'APPROVED', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewRequests: [], latestReviews: [{ author: { login: 'todie' }, state: 'APPROVED' }], statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }] },
+  '152': { state: 'OPEN', createdAt: '2026-10-06T13:00:00Z', title: 'docs: fix comment', author: { login: 'Mark-Hickey' }, reviewDecision: 'APPROVED', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewRequests: [], latestReviews: [{ author: { login: 'todie' }, state: 'APPROVED' }], statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }] },
   '87': { state: 'OPEN', title: 'api change', author: { login: 'Mark-Hickey' }, reviewDecision: 'REVIEW_REQUIRED', mergeStateStatus: 'BLOCKED', reviewRequests: [{ login: 'allen' }], latestReviews: [], statusCheckRollup: [{ name: 'lint', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/unsigned-gg/api/actions/runs/1' }] },
 }
 
@@ -162,6 +168,23 @@ describe('through the engine', () => {
       expect(await line.find({ key: 'lw-band' })).toBeDefined()
     })
 
+    test(`the Tickets pane on ${surface} fits a 40-column dock: status words stay whole, nothing runs off the edge`, async ($, on) => {
+      fakes(on, 'mcp__claude_ai_Linear__')
+      await $.command.run({ command: 'tickets', args: '' } as never)
+      const props = { title: 'Linear tickets', isFocused: true, bodyColumns: 40, placement: 'dock', scroll: { bodyRows: 40 }, view: {} }
+      const pane = await $.ui.mount({ plugin: 'linear-watch', surface, component: 'Pane', requestId: 'linear-tickets', props, viewport: { columns: 160, rows: 50 } } as never)
+      expect(await pane.find({ text: 'IN REVIEW' })).toBeDefined()
+      expect(await pane.find({ text: 'FAILING' })).toBeDefined()
+      expect(await pane.find({ text: 'READY' })).toBeDefined()
+      // Every card is the pane's width, not the terminal's.
+      const boxes = await pane.findAll({ type: 'Box' })
+      for (const b of boxes) {
+        const w = (b as unknown as { props?: { width?: number } }).props?.width
+        if (typeof w === 'number') expect(w).toBeLessThanOrEqual(40)
+      }
+      expect(await pane.find({ key: 'lw-close' })).toBeDefined()
+    })
+
     test(`the PRs pane on ${surface}: expanded shows details, the toggle compacts it`, async ($, on) => {
       fakes(on, 'mcp__claude_ai_Linear__')
         await $.command.run({ command: 'prs', args: '' } as never)
@@ -173,31 +196,44 @@ describe('through the engine', () => {
       await pane.press({ key: 'lw-toggle' } as never)
       // Compact keeps the hover card (hidden until pointed at), but drops the detail lines.
       expect(await pane.find({ text: /Blocked by branch rules/ })).toBeUndefined()
-      expect(await pane.find({ key: 'lw-toggle', text: /Expand/ })).toBeDefined()
+      expect(await pane.find({ key: 'lw-toggle', text: /expand/ })).toBeDefined()
     })
   }
 })
 
 describe('text views', () => {
   const ready = prFromGh({ repo: 'unsigned-gg/site', number: 152, url: 'https://github.com/unsigned-gg/site/pull/152' }, GH['152'] as never, 'OPS-1608')
-  const open = [{ id: 'OPS-1608', title: 'fix it', status: 'In Review', statusType: 'started', url: 'https://linear.app/c/issue/OPS-1608', prs: [ready] }]
+  const history = HISTORY.map(h => ({ name: h.state.name, type: h.state.type, at: h.startedAt }))
+  const open = [{ id: 'OPS-1608', title: 'fix it', status: 'In Review', statusType: 'started', url: 'https://linear.app/c/issue/OPS-1608', prs: [ready], history }]
+  const now = Date.parse('2026-10-09T23:00:00Z')
 
-  test('/tickets text: ticket, title, aligned PR row, link and key', () => {
-    expect(ticketsText(open, 'Mark-Hickey')).toBe(
+  test('/tickets text: ticket with its stages, each PR with its stages, link and key', () => {
+    expect(ticketsText(open, 'Mark-Hickey', now)).toBe(
       [
-        '◆ OPS-1608  In Review',
+        '◆ OPS-1608  In Review · 4d',
         '  fix it',
+        '  ✓ Backlog → ✓ Todo → ● In Review → ○ Done',
         '  ● site#152  Ready  CI passed  Operator merges',
+        '      ✓ Open → ✓ CI → ✓ Review → ● Merge → ○ Merged · open 3d',
         '  https://linear.app/c/issue/OPS-1608',
         '',
         'Key:',
         '  ● Ready: Checks passed, reviews approved, GitHub says it can merge.',
+        '  Stages: ✓ done  ● now  ◷ waiting  ✕ blocked  ○ not yet',
       ].join('\n'),
     )
   })
 
+  test('/prs text on a narrow terminal folds the stages to glyphs and the current stage', () => {
+    const text = prsText(open, 'Mark-Hickey', now, 40)
+    expect(text).toContain('      ✓✓✓●○ Merge')
+    // The PR rows and stage lines fit 40 columns; links and the key's sentences are left whole.
+    const rows = text.split('\n\nKey:')[0]!.split('\n').filter(l => !l.includes('https://'))
+    for (const line of rows) expect(line.length).toBeLessThanOrEqual(40)
+  })
+
   test('/prs text with nothing linked says so', () => {
-    expect(prsText([{ ...open[0]!, prs: [] }], 'Mark-Hickey')).toBe('No pull requests are linked to your open Linear tickets.')
+    expect(prsText([{ ...open[0]!, prs: [] }], 'Mark-Hickey', now)).toBe('No pull requests are linked to your open Linear tickets.')
   })
 
   test('the status line counts PRs that wait on you', () => {
