@@ -1,35 +1,36 @@
 # claude-mods
 
-My Claude Code mods. Each folder is one mod: a plugin of hooks that Claude Code loads.
+My Claude Code mods. Each mod is a separate plugin in its own folder, with its own README.
+Install only the mods you want.
 
 | Mod | What it does |
 |---|---|
-| `linear-watch` | Checks the Linear tickets assigned to me every hour. Shows each ticket above the prompt with the state of its linked PRs and who has to act (for example `● site#152 ready · operator merges`), a toast when a ticket is new or changes status, and a `/tickets` command that opens the full pane. |
-| `mesh-toast` | Every minute, peeks at my cortex mesh inbox and shows a toast for each new message. It uses `--peek`, so it never marks a message as read. |
-| `mesh-toaster` | A toaster above the prompt: empty slots when there is no mesh mail, toast popping up with the sender and subject when mail arrives. **Got it** puts the toast down (only in the toaster; the message stays unread on the mesh). |
-| `repo-sync` | Every 14 hours, runs `bin/repo-sync` and shows a toast with what it updated. |
+| [`linear-watch`](linear-watch/) | Linear Watch and PR Watch. Your Linear tickets and their linked PRs above the prompt, checked every hour. `/tickets` and `/prs` open panes with CI, reviews, merge state and the next action. |
+| [`mesh-toast`](mesh-toast/) | A toast for each new cortex mesh message. It never marks a message as read. |
+| [`mesh-toaster`](mesh-toaster/) | A toaster above the prompt. A toast comes up from it when mesh mail comes. |
+| [`repo-sync`](repo-sync/) | Every 14 hours, updates the repos in `~/projects` by fast-forward only, and tells you what changed. |
 
-`bin/repo-sync` updates every repo under `~/projects/<owner>/<repo>`. It only fast-forwards a repo
-that has no uncommitted changes and no unpushed commits. Anything else is reported and left alone.
-It never deletes, resets, rebases or pushes. Copy it to `~/.local/bin/` before you use `repo-sync`.
+## Install a mod
 
-## Use a mod in a session
+This repo is a Claude Code marketplace. In a terminal session of Claude Code, install one mod
+with its name:
 
-Copy the mod folder into the session's mod folder, then turn on hot reloading when Claude Code asks:
-
-```sh
-cp -r linear-watch ~/.claude/dev-mods/<session-id>/
+```
+/plugin install linear-watch --marketplace Mark-Hickey/claude-mods
 ```
 
-Check a mod before you use it:
+Type `y` to add the marketplace, then select a scope. The repo is private, so `gh` must be signed
+in with access to it.
+
+## Try a mod without installing it
+
+```sh
+claude --plugin-dir ./linear-watch
+```
+
+## Check a mod
 
 ```sh
 claude plugin validate linear-watch
 claude plugin test linear-watch
 ```
-
-`linear-watch` reads Linear through the Linear connector (`mcp__plugin_design_linear__list_issues`).
-Without that connector, it shows "Linear: check failed".
-
-`mesh-toast` and `mesh-toaster` read the inbox through the `cortex-join` plugin's `cortex-mesh.py`. Without that plugin,
-they show nothing. `linear-watch` reads PR states with the `gh` CLI.

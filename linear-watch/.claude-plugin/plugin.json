@@ -1,6 +1,10 @@
 {
   "name": "linear-watch",
-  "version": "0.3.0",
-  "description": "Checks your assigned Linear tickets hourly: status line count, toast on new or changed tickets, /tickets list and pane",
-  "types": "./types/index.d.ts"
+  "version": "0.5.1",
+  "description": "Linear Watch + PR Watch: your Linear tickets and their PRs above the prompt, hourly. /tickets and /prs panes, compact and expanded modes, toasts on real changes.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Mark Hickey"
+  },
+  "repository": "https://github.com/Mark-Hickey/claude-mods"
 }

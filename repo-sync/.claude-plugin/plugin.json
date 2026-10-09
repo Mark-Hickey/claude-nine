@@ -1,1 +1,9 @@
-{ "name": "repo-sync", "version": "0.1.0", "description": "Every 14 hours, safely fast-forwards the repos in ~/projects and toasts what changed" }
+{
+  "name": "repo-sync",
+  "version": "0.1.0",
+  "description": "Every 14 hours, safely fast-forwards the repos in ~/projects and toasts what changed",
+  "author": {
+    "name": "Mark Hickey"
+  },
+  "repository": "https://github.com/Mark-Hickey/claude-mods"
+}
