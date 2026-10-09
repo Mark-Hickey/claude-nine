@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# repo-sync: bring every repo under ~/projects/<owner>/<repo> up to date, safely.
+# Updates a repo only by fast-forward, and only when it has no uncommitted changes
+# and no unpushed commits; anything else is reported and left alone. Never deletes,
+# resets, rebases or pushes. Prints one line per repo, then a summary line.
+set -u
+ROOT="${REPO_SYNC_ROOT:-$HOME/projects}"
+LOG="${XDG_CACHE_HOME:-$HOME/.cache}/repo-sync.log"
+mkdir -p "$(dirname "$LOG")"
+exec > >(tee -a "$LOG")
+echo "== $(date -Is)"
+
+updated=0; current=0; skipped=0
+report() { printf '%s\n' "$*"; }
+
+for gitdir in "$ROOT"/*/*/.git; do
+  repo=$(dirname "$gitdir")
+  name="${repo#"$ROOT"/}"
+  case "$name" in _attic/*) continue ;; esac
+  cd "$repo" || continue
+
+  if ! git fetch --quiet origin 2>/dev/null; then
+    report "skip $name: fetch failed"; skipped=$((skipped+1)); continue
+  fi
+  if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    report "skip $name: uncommitted changes"; skipped=$((skipped+1)); continue
+  fi
+  if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+    report "skip $name: branch has no upstream"; skipped=$((skipped+1)); continue
+  fi
+  unpushed=$(git log --branches --not --remotes --oneline | wc -l)
+  read -r behind ahead < <(git rev-list --left-right --count '@{u}...HEAD')
+  if [ "$ahead" -gt 0 ] || [ "$unpushed" -gt 0 ]; then
+    report "skip $name: $((ahead > unpushed ? ahead : unpushed)) unpushed, $behind behind"
+    skipped=$((skipped+1)); continue
+  fi
+  if [ "$behind" -eq 0 ]; then
+    current=$((current+1)); continue
+  fi
+  if git merge --ff-only --quiet '@{u}' 2>/dev/null; then
+    report "updated $name: +$behind"; updated=$((updated+1))
+  else
+    report "skip $name: fast-forward failed"; skipped=$((skipped+1))
+  fi
+done
+
+summary="summary updated=$updated current=$current skipped=$skipped"
+report "$summary"

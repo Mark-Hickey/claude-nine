@@ -1,0 +1,29 @@
+{
+  "name": "claude-mods",
+  "owner": {
+    "name": "Mark Hickey"
+  },
+  "description": "Mark Hickey's Claude Code mods: Linear and PR watch, cortex mesh toasts, safe repo sync. Each installs on its own.",
+  "plugins": [
+    {
+      "name": "linear-watch",
+      "source": "./linear-watch",
+      "description": "Linear Watch + PR Watch: your Linear tickets and their PRs above the prompt, with /tickets and /prs panes"
+    },
+    {
+      "name": "mesh-toast",
+      "source": "./mesh-toast",
+      "description": "A toast for each new cortex mesh message"
+    },
+    {
+      "name": "mesh-toaster",
+      "source": "./mesh-toaster",
+      "description": "A toaster above the prompt that pops up when mesh mail arrives"
+    },
+    {
+      "name": "repo-sync",
+      "source": "./repo-sync",
+      "description": "Every 14 hours, safely fast-forwards the repos in ~/projects and toasts what changed"
+    }
+  ]
+}
