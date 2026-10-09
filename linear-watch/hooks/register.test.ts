@@ -20,7 +20,8 @@ const GH: Record<string, unknown> = {
 
 // Linear answers on the server named; the other server, when asked, has no such tool.
 // GH is read at call time, so a test can change a PR between two checks.
-function fakes(on: On, server: 'mcp__claude_ai_Linear__' | 'mcp__plugin_design_linear__', gh: Record<string, unknown> = GH) {
+// `sh` sees each browser-open command instead of a browser opening.
+function fakes(on: On, server: 'mcp__claude_ai_Linear__' | 'mcp__plugin_design_linear__', gh: Record<string, unknown> = GH, sh?: (argv: readonly string[]) => void) {
   on('tool.call', async ($, e) => {
     const tool = String(e.tool)
     if (!tool.startsWith(server)) return { result: {}, isError: true, text: `No such tool available: ${tool}` } as never
@@ -29,6 +30,10 @@ function fakes(on: On, server: 'mcp__claude_ai_Linear__' | 'mcp__plugin_design_l
   })
   on('process.run', async ($, e) => {
     const argv = e.argv as readonly string[]
+    if (argv[0] === 'sh') {
+      sh?.(argv)
+      return { value: { exitCode: 1, stdout: '', stderr: '' } } as never
+    }
     if (argv[1] === 'api') return { value: { exitCode: 0, stdout: 'Mark-Hickey\n', stderr: '' } } as never
     return { value: { exitCode: 0, stdout: JSON.stringify(gh[argv[3] as string]), stderr: '' } } as never
   })
@@ -72,7 +77,9 @@ describe('through the engine', () => {
     expect(text).toContain('Waiting on others (1)')
     expect(text).toContain('● site#152')
     expect(text).toContain('Operator merges')
-    expect(text).toContain('OPS-1608 · https://github.com/unsigned-gg/site/pull/152')
+    // Each next action links to where it happens: the failed check's log, the PR page.
+    expect(text).toContain('→ Next: You fix CI · https://github.com/unsigned-gg/api/actions/runs/1')
+    expect(text).toContain('· Next: Operator merges · https://github.com/unsigned-gg/site/pull/152')
   })
 
   test('Linear through the old design-plugin server still works', async ($, on) => {
@@ -102,7 +109,7 @@ describe('through the engine', () => {
     await $.session.start({ source: 'startup', cwd: '/tmp' } as never)
     await clock.settle()
     expect(seen.toasts).toEqual([])
-    expect(seen.status.at(-1)).toBe('Linear: 1 open · 1 PR needs you')
+    expect(seen.status.at(-1)).toBe('Linear: 1 open · 1 needs you')
     gh['87'] = { ...(GH['87'] as object), statusCheckRollup: [{ name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' }] }
     await clock.advance(60 * 60 * 1000)
     expect(seen.toasts).toEqual(['api#87 checks passed, awaiting review · Reviewer acts'])
@@ -142,6 +149,21 @@ describe('through the engine', () => {
     expect(await roomy.find({ text: 'toaster row 7' })).toBeDefined()
   })
 
+  test('o opens the first action that needs you, the URL passed as an argument, never as shell text', async ($, on) => {
+    const runs: (readonly string[])[] = []
+    const { seen } = fakes(on, 'mcp__claude_ai_Linear__', GH, argv => runs.push(argv))
+    await $.command.run({ command: 'prs', args: '' } as never)
+    const props = { title: 't', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { bodyRows: 40 }, view: {} }
+    const pane = await $.ui.mount({ plugin: 'linear-watch', surface: 'terminal', component: 'Pane', requestId: 'linear-prs', props, viewport: { columns: 120, rows: 40 } } as never)
+    await pane.press({ key: 'lw-open-next' } as never)
+    expect(runs.length).toBe(1)
+    expect(runs[0]?.slice(0, 2)).toEqual(['sh', '-c'])
+    expect(runs[0]?.[1]).not.toContain('github.com')
+    expect(runs[0]?.at(-1)).toBe('https://github.com/unsigned-gg/api/actions/runs/1')
+    // explorer.exe answers 1 even when it opened the page: that is not reported as a failure.
+    expect(seen.toasts.at(-1)).toBe('Opened: You fix CI')
+  })
+
   for (const surface of ['terminal', 'desktop'] as const) {
     test(`the band on ${surface}: two cards wide, one card narrow, one line when folded`, async ($, on) => {
       fakes(on, 'mcp__claude_ai_Linear__')
@@ -152,7 +174,9 @@ describe('through the engine', () => {
       const wide = await mount(160)
       expect(await wide.find({ text: /Linear Watch/ })).toBeDefined()
       expect(await wide.find({ text: /PR Watch/ })).toBeDefined()
-      expect(await wide.find({ text: '2 pull requests' })).toBeDefined()
+      expect(await wide.find({ text: '2 open' })).toBeDefined()
+      // The first action that needs you is one key away.
+      expect(await wide.find({ key: 'lw-band-open', text: /You fix CI/ })).toBeDefined()
       // The most pressing PR leads: api#87 fails, so its row says so in words, not colour alone.
       expect(await wide.find({ text: 'FAILING' })).toBeDefined()
       expect(await wide.find({ text: /CI checks failed/ })).toBeDefined()
@@ -215,6 +239,7 @@ describe('text views', () => {
         '  ✓ Backlog → ✓ Todo → ● In Review → ○ Done',
         '  ● site#152  Ready  CI passed  Operator merges',
         '      ✓ Open → ✓ CI → ✓ Review → ● Merge → ○ Merged · open 3d',
+        '      · Next: Operator merges · https://github.com/unsigned-gg/site/pull/152',
         '  https://linear.app/c/issue/OPS-1608',
         '',
         'Key:',
@@ -232,13 +257,34 @@ describe('text views', () => {
     for (const line of rows) expect(line.length).toBeLessThanOrEqual(40)
   })
 
+  test('a ticket whose PRs are all merged folds them to one line each and says to close it', () => {
+    const merged = prFromGh({ repo: 'unsigned-gg/unsigned-onboard', number: 7, url: 'https://github.com/unsigned-gg/unsigned-onboard/pull/7' }, { state: 'MERGED', mergedAt: '2026-10-06T13:44:54Z' } as never, 'OPS-1608')
+    const t = [{ ...open[0]!, prs: [merged] }]
+    expect(ticketsText(t, 'Mark-Hickey', now)).toBe(
+      [
+        '◆ OPS-1608  In Review · 4d',
+        '  fix it',
+        '  ✓ Backlog → ✓ Todo → ● In Review → ○ Done',
+        '  → Next: You move OPS-1608 to Done · https://linear.app/c/issue/OPS-1608',
+        '  ✓ unsigned-onboard#7  merged 3d ago',
+        '',
+        'Key:',
+        '  ✓ Merged: The PR is in the base branch.',
+        '  Stages: ✓ done  ● now  ◷ waiting  ✕ blocked  ○ not yet',
+      ].join('\n'),
+    )
+    expect(prsText(t, 'Mark-Hickey', now)).toContain('Tickets to close (1)\n  → Next: You move OPS-1608 to Done')
+    expect(prsText(t, 'Mark-Hickey', now)).toContain('Done (1)\n  ✓ unsigned-onboard#7  merged 3d ago · OPS-1608')
+    expect(statusText(t, 'Mark-Hickey')).toBe('Linear: 1 open · 1 needs you')
+  })
+
   test('/prs text with nothing linked says so', () => {
     expect(prsText([{ ...open[0]!, prs: [] }], 'Mark-Hickey', now)).toBe('No pull requests are linked to your open Linear tickets.')
   })
 
   test('the status line counts PRs that wait on you', () => {
     expect(statusText(open, 'Mark-Hickey')).toBe('Linear: 1 open')
-    expect(statusText(open, 'unsigned-gg')).toBe('Linear: 1 open · 1 PR needs you')
+    expect(statusText(open, 'unsigned-gg')).toBe('Linear: 1 open · 1 needs you')
   })
 
   test('mode arguments', () => {

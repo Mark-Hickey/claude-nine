@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { Issue, Pr } from '../types'
 import {
-  KEY_ORDER, PR_LOOK, changes, prSteps, stepsLine, ticketSteps, wrapLines, ciText, classifyPr, groupPrs, isOpen, keyFor, mergeText, nextText, prFromGh, prRefs,
+  KEY_ORDER, PR_LOOK, actionUrl, allActions, changes, prSteps, ticketAction, stepsLine, ticketSteps, wrapLines, ciText, classifyPr, groupPrs, isOpen, keyFor, mergeText, nextText, prFromGh, prRefs,
   prSummary, reviewText, rowCells, snapshotOf, ticketLine, toastsFor,
 } from './model'
 import type { GhPr } from './model'
@@ -244,5 +244,35 @@ describe('stages', () => {
       '"safest profile" comment on P…',
     ])
     expect(wrapLines('short', 30, 2)).toEqual(['short'])
+  })
+})
+
+describe('actions', () => {
+  const gh = (x: GhPr) => pr('o/site', 1, x, 'OPS-1')
+  test('each action links to where it happens', () => {
+    expect(actionUrl(gh({ state: 'OPEN', statusCheckRollup: [{ name: 'lint', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/o/site/actions/runs/9' }] }))).toBe('https://github.com/o/site/actions/runs/9')
+    expect(actionUrl(gh({ state: 'OPEN', statusCheckRollup: [{ name: 'lint', status: 'COMPLETED', conclusion: 'FAILURE' }] }))).toBe('https://github.com/o/site/pull/1/checks')
+    expect(actionUrl(gh({ state: 'OPEN', reviewDecision: 'APPROVED', mergeable: 'CONFLICTING', statusCheckRollup: green }))).toBe('https://github.com/o/site/pull/1/conflicts')
+    expect(actionUrl(gh({ state: 'OPEN', reviewDecision: 'CHANGES_REQUESTED', statusCheckRollup: green }))).toBe('https://github.com/o/site/pull/1/files')
+    expect(actionUrl(gh({ state: 'OPEN', reviewDecision: 'APPROVED', mergeStateStatus: 'CLEAN', statusCheckRollup: green }))).toBe('https://github.com/o/site/pull/1')
+  })
+
+  test('a ticket is yours to close only when every linked PR is finished and one merged', () => {
+    const merged = gh({ state: 'MERGED' })
+    const closed = gh({ state: 'CLOSED' })
+    const ready = gh({ state: 'OPEN', reviewDecision: 'APPROVED', mergeStateStatus: 'CLEAN', statusCheckRollup: green })
+    expect(ticketAction(issue('OPS-1', 'In Review', 'started', [merged]))?.text).toBe('You move OPS-1 to Done')
+    expect(ticketAction(issue('OPS-1', 'In Review', 'started', [merged, ready]))).toBeUndefined()
+    expect(ticketAction(issue('OPS-1', 'In Review', 'started', [closed]))).toBeUndefined()
+    expect(ticketAction(issue('OPS-1', 'In Review', 'started', []))).toBeUndefined()
+    expect(ticketAction(issue('OPS-1', 'Done', 'completed', [merged]))).toBeUndefined()
+  })
+
+  test('your actions come first: fixes by urgency, then tickets to close, then what others hold', () => {
+    const failing = pr('o/a', 1, { state: 'OPEN', author: { login: ME }, statusCheckRollup: [{ name: 'x', status: 'COMPLETED', conclusion: 'FAILURE' }] }, 'A')
+    const waiting = pr('o/b', 2, { state: 'OPEN', reviewDecision: 'REVIEW_REQUIRED', statusCheckRollup: green }, 'A')
+    const merged = pr('o/c', 3, { state: 'MERGED' }, 'B')
+    const list = allActions([issue('A', 'In Review', 'started', [waiting, failing]), issue('B', 'In Review', 'started', [merged])], ME)
+    expect(list.map(a => `${a.who}:${a.text}`)).toEqual(['you:You fix CI', 'you:You move B to Done', 'reviewer:Reviewer acts'])
   })
 })

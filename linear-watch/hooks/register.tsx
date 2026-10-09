@@ -2,8 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Health, Issue, Mode, Pr, StateVisit, Update } from '../types'
-import { GH_FIELDS, STEP_LOOK, prFromGh, prRefs, allPrs, byUrgency, changes, groupPrs, inStateFor, isOpen, keyFor, nextActor, prName, prSteps, prWhen, rowCells, snapshotOf, stepsLine, ticketSteps, toastsFor } from './model'
-import type { GhPr, Snapshot } from './model'
+import { GH_FIELDS, PR_LOOK, STEP_LOOK, actionsForYou, allActions, allPrs, byUrgency, changes, groupPrs, inStateFor, isDone, isOpen, keyFor, prAction, prFromGh, prName, prRefs, prSteps, prWhen, rowCells, snapshotOf, stepsLine, ticketAction, ticketSteps, toastsFor } from './model'
+import type { Action, GhPr, Snapshot } from './model'
 import { band, cardRows, keyChart, paneHeader, rowsOf, prGroups, recent, ticketBlock, toolbar } from './view'
 
 
@@ -36,25 +36,34 @@ const byTicketUrgency = (a: Issue, b: Issue) => {
 }
 
 // The plain-text lists the commands return: for terminals too narrow for a pane, and for scrollback.
-// Each ticket and PR has a stages line, so how far it has got reads without the pane.
+// Each ticket and active PR has a stages line and its next action with the page to do it on;
+// finished PRs take one line. Terminals make the bare URLs clickable.
+const prHead = (c: ReturnType<typeof rowCells>[number] | undefined, pr: Pr) =>
+  c ? `${c.glyph} ${c.name}  ${c.state}${c.showCi ? `  ${c.ci}` : ''}${c.showNext ? `  ${c.next}` : ''}`.trimEnd() : prName(pr)
+const doneText = (pr: Pr, now: number) => `${PR_LOOK[pr.state].glyph} ${prName(pr)}  ${prWhen(pr, now) ?? pr.state}`
+const actionText = (a: Action) => `${a.who === 'you' ? '→' : '·'} Next: ${a.text} · ${a.url}`
+
 export function ticketsText(open: Issue[], me: string | null, now: number, columns = 100): string {
   if (open.length === 0) return 'No open Linear tickets assigned to you.'
   const blocks = open.map(i => {
     const prs = [...(i.prs ?? [])].sort(byUrgency)
-    const cells = rowCells(prs, me, columns - 2)
+    const active = prs.filter(p => !isDone(p))
+    const cells = rowCells(active, me, columns - 2)
     const since = inStateFor(i, now)
-    const rows = prs.flatMap((pr, n) => {
-      const c = cells[n]
-      const head = c ? `  ${c.glyph} ${c.name}  ${c.state}${c.showCi ? `  ${c.ci}` : ''}${c.showNext ? `  ${c.next}` : ''}`.trimEnd() : `  ${prName(pr)}`
+    const close = ticketAction(i)
+    const rows = active.flatMap((pr, n) => {
       const when = prWhen(pr, now)
-      return [head, `      ${stepsLine(prSteps(pr), columns - 6)}${when ? ` · ${when}` : ''}`]
+      return [`  ${prHead(cells[n], pr)}`, `      ${stepsLine(prSteps(pr), columns - 6)}${when ? ` · ${when}` : ''}`, `      ${actionText(prAction(pr, me))}`]
     })
     return [
       `◆ ${i.id}  ${i.status}${since ? ` · ${since}` : ''}`,
       `  ${i.title}`,
       `  ${stepsLine(ticketSteps(i), columns - 2)}`,
-      ...(rows.length > 0 ? rows : ['  No linked PRs']),
-      `  ${i.url}`,
+      ...(close ? [`  ${actionText(close)}`] : []),
+      ...rows,
+      ...prs.filter(isDone).map(pr => `  ${doneText(pr, now)}`),
+      ...(prs.length === 0 ? ['  No linked PRs'] : []),
+      ...(close ? [] : [`  ${i.url}`]),
     ].join('\n')
   })
   return blocks.join('\n\n') + legend(open)
@@ -63,20 +72,18 @@ export function ticketsText(open: Issue[], me: string | null, now: number, colum
 export function prsText(open: Issue[], me: string | null, now: number, columns = 100): string {
   const prs = allPrs(open)
   if (prs.length === 0) return 'No pull requests are linked to your open Linear tickets.'
-  return (
-    groupPrs(prs, me)
-      .map(g => {
-        const cells = rowCells(g.prs, me, columns - 2)
-        const rows = g.prs.map((pr, n) => {
-          const c = cells[n]
-          const line = c ? `  ${c.glyph} ${c.name}  ${c.state}${c.showCi ? `  ${c.ci}` : ''}${c.showNext ? `  ${c.next}` : ''}`.trimEnd() : `  ${prName(pr)}`
-          const when = prWhen(pr, now)
-          return [line, `      ${stepsLine(prSteps(pr), columns - 6)}${when ? ` · ${when}` : ''}`, `      ${pr.ticket ? `${pr.ticket} · ` : ''}${pr.url}`].join('\n')
-        })
-        return [`${g.title} (${g.prs.length})`, ...rows].join('\n')
-      })
-      .join('\n\n') + legend(open)
-  )
+  const groups = groupPrs(prs, me).map(g => {
+    if (g.title === 'Done') return [`Done (${g.prs.length})`, ...g.prs.map(pr => `  ${doneText(pr, now)}${pr.ticket ? ` · ${pr.ticket}` : ''}`)].join('\n')
+    const cells = rowCells(g.prs, me, columns - 2)
+    const rows = g.prs.map((pr, n) => {
+      const when = prWhen(pr, now)
+      return [`  ${prHead(cells[n], pr)}`, `      ${stepsLine(prSteps(pr), columns - 6)}${when ? ` · ${when}` : ''}${pr.ticket ? ` · ${pr.ticket}` : ''}`, `      ${actionText(prAction(pr, me))}`].join('\n')
+    })
+    return [`${g.title} (${g.prs.length})`, ...rows].join('\n')
+  })
+  const close = open.flatMap(i => ticketAction(i) ?? [])
+  const closing = close.length > 0 ? [`Tickets to close (${close.length})`, ...close.map(a => `  ${actionText(a)}`)].join('\n') : undefined
+  return [...(closing ? [closing] : []), ...groups].join('\n\n') + legend(open)
 }
 
 // The key at the end of the text lists: the PR states in use, then the stage marks.
@@ -86,10 +93,10 @@ function legend(open: Issue[]): string {
   return `\n\nKey:\n${key.map(k => `  ${k}`).join('\n')}${key.length > 0 ? '\n' : ''}  Stages: ${marks}`
 }
 
-// The status line: open tickets, and how many PRs wait on you.
+// The status line: open tickets, and how many actions wait on you (PR fixes and tickets to close).
 export function statusText(open: Issue[], me: string | null): string {
-  const mine = allPrs(open).filter(pr => nextActor(pr, me) === 'you').length
-  return `Linear: ${open.length} open${mine > 0 ? ` · ${mine} PR${mine === 1 ? '' : 's'} need${mine === 1 ? 's' : ''} you` : ''}`
+  const mine = actionsForYou(open, me).length
+  return `Linear: ${open.length} open${mine > 0 ? ` · ${mine} need${mine === 1 ? 's' : ''} you` : ''}`
 }
 
 // --- Reading Linear and GitHub. Linear comes through whichever Linear MCP server the session has;
@@ -259,6 +266,20 @@ async function runCommand($: EngineInterface, args: string, command: 'tickets' |
   return { text: (command === 'tickets' ? ticketsText(open, me, now) : prsText(open, me, now)) + note }
 }
 
+// Opens a page in the person's browser: through Windows from WSL, else the desktop's opener.
+// Only https pages from Linear or GitHub data; the URL goes in as an argument, never as shell text.
+async function openUrl($: EngineInterface, url: string, label: string) {
+  if (!/^https:\/\/[^\s]+$/.test(url)) {
+    $.ui.toast(`linear-watch: not opening ${label}: not an https link`)
+    return
+  }
+  const opener = 'if command -v wslview >/dev/null; then wslview "$1"; elif command -v explorer.exe >/dev/null; then explorer.exe "$1"; elif command -v xdg-open >/dev/null; then xdg-open "$1"; else open "$1"; fi'
+  const ran = await $.process.run(['sh', '-c', opener, 'open-url', url], { timeoutMs: 10_000 }).catch(() => null)
+  // explorer.exe reports exit 1 even when it opened the page; only a missing opener is a failure.
+  if (ran === null || ran.exitCode === 127) $.ui.toast(`linear-watch: could not open a browser. The link: ${url}`, { timeoutMs: 10_000 })
+  else $.ui.toast(`Opened: ${label}`)
+}
+
 // The pane toolbar's actions: each one real, each one the same in both panes.
 function actions($: EngineInterface, pane: string) {
   return {
@@ -266,6 +287,7 @@ function actions($: EngineInterface, pane: string) {
     refresh: () => check($),
     key: () => setMode($, m => ({ ...m, key: !m.key })),
     close: () => $.ui.close({ id: pane }),
+    open: (url: string, label: string) => openUrl($, url, label),
   }
 }
 
@@ -307,14 +329,15 @@ export const register: Register = on => {
     ])
     // The pane's own body width: docked beside the transcript it is far narrower than the terminal.
     const columns = e.props.bodyColumns ?? e.viewport?.columns ?? 100
+    const act = actions($, TICKETS)
     return (
       <Box flexDirection="column">
         {paneHeader(ui, 'Linear Tickets', `${open.length} open`, health, checking, now, columns)}
         {open.length === 0 && <Text dimColor>No open Linear tickets assigned to you.</Text>}
-        {open.map(i => ticketBlock(ui, i, me, columns, mode.pane, now))}
+        {open.map(i => ticketBlock(ui, i, me, columns, mode.pane, now, act.open))}
         {mode.pane === 'expanded' && recent(ui, updates, now, columns, () => true)}
         {mode.key && keyChart(ui, columns)}
-        {toolbar(ui, mode.pane, mode.key, actions($, TICKETS))}
+        {toolbar(ui, mode.pane, mode.key, allActions(open, me)[0], act)}
       </Box>
     )
   })
@@ -327,15 +350,20 @@ export const register: Register = on => {
     ])
     const columns = e.props.bodyColumns ?? e.viewport?.columns ?? 100
     const prs = allPrs(open)
-    const mine = prs.filter(pr => nextActor(pr, me) === 'you').length
+    const mine = actionsForYou(open, me).length
+    const act = actions($, PRS)
+    const closing = open.flatMap(i => ticketAction(i) ?? [])
     return (
       <Box flexDirection="column">
-        {paneHeader(ui, 'Pull Requests', `${prs.length} tracked${mine > 0 ? ` · ${mine} need${mine === 1 ? 's' : ''} you` : ''}`, health, checking, now, columns)}
+        {paneHeader(ui, 'Pull Requests', `${prs.filter(p => !isDone(p)).length} open${mine > 0 ? ` · ${mine} need${mine === 1 ? 's' : ''} you` : ''}`, health, checking, now, columns)}
         {prs.length === 0 && <Text dimColor>No pull requests are linked to your open Linear tickets.</Text>}
-        {prGroups(ui, prs, me, columns, mode.pane, now)}
+        {closing.length > 0 && <Text color="yellow" bold>{`TICKETS TO CLOSE · ${closing.length}`}</Text>}
+        {closing.map(a => <Text key={`close:${a.ticket}`} color="cyan">{`  → ${a.text}`}</Text>)}
+        {closing.length > 0 && <Text>{' '}</Text>}
+        {prGroups(ui, prs, me, columns, mode.pane, now, act.open)}
         {mode.pane === 'expanded' && recent(ui, updates, now, columns, u => u.pr !== undefined)}
         {mode.key && keyChart(ui, columns)}
-        {toolbar(ui, mode.pane, mode.key, actions($, PRS))}
+        {toolbar(ui, mode.pane, mode.key, allActions(open, me)[0], act)}
       </Box>
     )
   })
@@ -345,7 +373,7 @@ export const register: Register = on => {
     const below = await next(e)
     if (e.props.hasSurvey) return below
     const ui = $.ui.resolve(e)
-    const [open, mode, unseen, health, me] = await Promise.all([read($, openIssues), read($, modeAtom), read($, unseenAtom), read($, healthAtom), myLogin($)])
+    const [open, mode, unseen, health, me, now] = await Promise.all([read($, openIssues), read($, modeAtom), read($, unseenAtom), read($, healthAtom), myLogin($), $.clock.now()])
     // The band's own width, not the terminal's: it leaves room for the engine's marks.
     const columns = e.props.bodyColumns ?? e.viewport?.columns ?? 100
     const prs = allPrs(open)
@@ -356,7 +384,7 @@ export const register: Register = on => {
     const shown: Mode = mode.band === 'expanded' && !fits ? 'compact' : mode.band
     return (
       <ui.Box flexDirection="column">
-        {band(ui, open, prs, me, columns, shown, unseen, health, toggle)}
+        {band(ui, open, prs, me, columns, shown, unseen, health, now, toggle, (url, label) => openUrl($, url, label))}
         {below}
       </ui.Box>
     )
