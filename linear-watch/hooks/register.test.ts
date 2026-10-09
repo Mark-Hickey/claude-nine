@@ -1,69 +1,213 @@
-import { expect, test } from 'claude-code/testing'
-import { classifyPr, diff, isOpen, paneRows, prLabel, prRefs } from './register'
+import { describe, expect, mock, test } from 'claude-code/testing'
+import type { Register } from 'claude-code'
+type On = Parameters<Register>[0]
 
-const issue = (id: string, status: string, statusType = 'backlog') =>
-  ({ id, title: `t ${id}`, status, statusType, url: `u/${id}` })
+import { modeArg, prsText, statusText, ticketsText } from './register'
+import { prFromGh } from './model'
 
-test('diff reports new tickets and status changes, not unchanged ones', () => {
-  const seen = { 'OPS-1': 'Backlog', 'OPS-2': 'Backlog' }
-  const { added, moved } = diff(
-    [issue('OPS-1', 'Backlog'), issue('OPS-2', 'In Progress', 'started'), issue('OPS-3', 'Todo', 'unstarted')],
-    seen,
-  )
-  expect(added.map(i => i.id)).toEqual(['OPS-3'])
-  expect(moved.map(i => i.id)).toEqual(['OPS-2'])
-})
+const ISSUES = { issues: [{ id: 'OPS-1608', title: 'fix the rolematrix comment', status: 'In Review', statusType: 'started', url: 'https://linear.app/c/issue/OPS-1608', priority: { value: 3, name: 'Medium' } }] }
+const ATTACH = { attachments: [{ url: 'https://github.com/unsigned-gg/site/pull/152' }, { url: 'https://github.com/unsigned-gg/api/pull/87' }] }
+const GH: Record<string, unknown> = {
+  '152': { state: 'OPEN', title: 'docs: fix comment', author: { login: 'Mark-Hickey' }, reviewDecision: 'APPROVED', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', reviewRequests: [], latestReviews: [{ author: { login: 'todie' }, state: 'APPROVED' }], statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }] },
+  '87': { state: 'OPEN', title: 'api change', author: { login: 'Mark-Hickey' }, reviewDecision: 'REVIEW_REQUIRED', mergeStateStatus: 'BLOCKED', reviewRequests: [{ login: 'allen' }], latestReviews: [], statusCheckRollup: [{ name: 'lint', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/unsigned-gg/api/actions/runs/1' }] },
+}
 
-test('done and canceled tickets are not counted as open', () => {
-  expect(isOpen(issue('A', 'Done', 'completed'))).toBe(false)
-  expect(isOpen(issue('B', 'Canceled', 'canceled'))).toBe(false)
-  expect(isOpen(issue('C', 'Backlog'))).toBe(true)
-})
+// Linear answers on the server named; the other server, when asked, has no such tool.
+// GH is read at call time, so a test can change a PR between two checks.
+function fakes(on: On, server: 'mcp__claude_ai_Linear__' | 'mcp__plugin_design_linear__', gh: Record<string, unknown> = GH) {
+  on('tool.call', async ($, e) => {
+    const tool = String(e.tool)
+    if (!tool.startsWith(server)) return { result: {}, isError: true, text: `No such tool available: ${tool}` } as never
+    if (tool.endsWith('list_issues')) return { result: ISSUES, text: JSON.stringify(ISSUES) } as never
+    return { result: ATTACH, text: JSON.stringify(ATTACH) } as never
+  })
+  on('process.run', async ($, e) => {
+    const argv = e.argv as readonly string[]
+    if (argv[1] === 'api') return { value: { exitCode: 0, stdout: 'Mark-Hickey\n', stderr: '' } } as never
+    return { value: { exitCode: 0, stdout: JSON.stringify(gh[argv[3] as string]), stderr: '' } } as never
+  })
+  return bottoms(on)
+}
 
-test('linked PRs come from GitHub pull links in the attachments, once each', () => {
-  const refs = prRefs([
-    { url: 'https://github.com/unsigned-gg/unsigned-onboard/pull/7' },
-    { url: 'https://github.com/unsigned-gg/site/pull/152' },
-    { url: 'https://github.com/unsigned-gg/site/pull/152' },
-    { url: 'https://linear.app/cerebral-work/issue/OPS-1' },
-  ])
-  expect(refs.map(r => `${r.repo}#${r.number}`)).toEqual(['unsigned-gg/unsigned-onboard#7', 'unsigned-gg/site#152'])
-})
+// The engine's own answers for what the mod shows: toasts and status lines are kept to assert on.
+function bottoms(on: On) {
+  const clock = mock.clock(on)
+  mock.store(on)
+  const seen = { toasts: [] as string[], status: [] as (string | undefined)[], opened: 0 }
+  on('ui.toast', async ($, e) => {
+    seen.toasts.push(e.text)
+    return { value: undefined } as never
+  })
+  on('ui.status', async ($, e) => {
+    seen.status.push(e.text)
+    return { value: undefined } as never
+  })
+  on('ui.open', async () => {
+    seen.opened += 1
+    return { value: { isPlaced: true } } as never
+  })
+  on('ui.close', async () => ({ value: undefined }) as never)
+  on('command.register', async () => ({ value: undefined }) as never)
+  on('session.start', async ($, e) => ({ cwd: e.cwd }) as never)
+  // Nothing beneath the band: the mods under this one draw an empty Box.
+  on('ui.render', { component: 'AbovePrompt' }, async () => ({ type: 'Box', props: {}, children: [] }) as never)
+  return { clock, seen }
+}
 
-test('a PR state says who has to act', () => {
-  const green = [{ status: 'COMPLETED', conclusion: 'SUCCESS' }]
-  expect(classifyPr({ state: 'MERGED', reviewDecision: 'APPROVED' })).toBe('merged')
-  expect(classifyPr({ state: 'OPEN', reviewDecision: 'APPROVED', statusCheckRollup: green })).toBe('ready')
-  expect(classifyPr({ state: 'OPEN', reviewDecision: 'REVIEW_REQUIRED', statusCheckRollup: green })).toBe('review')
-  expect(classifyPr({ state: 'OPEN', reviewDecision: 'APPROVED', statusCheckRollup: [{ status: 'IN_PROGRESS', conclusion: null }] })).toBe('running')
-  expect(classifyPr({ state: 'OPEN', reviewDecision: 'APPROVED', statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'FAILURE' }] })).toBe('failing')
-  expect(classifyPr({ state: 'OPEN', reviewDecision: 'CHANGES_REQUESTED', statusCheckRollup: green })).toBe('changes')
-  expect(classifyPr({ state: 'OPEN', isDraft: true })).toBe('draft')
-  expect(classifyPr({ state: 'CLOSED' })).toBe('closed')
-})
+describe('through the engine', () => {
+  test('/prs groups the real PR data by who acts, with links', async ($, on) => {
+    fakes(on, 'mcp__claude_ai_Linear__')
+    const ran = await $.command.run({ command: 'prs', args: '' } as never)
+    const text = (ran as { text?: string }).text ?? ''
+    expect(text).toContain('Needs you (1)')
+    expect(text).toContain('✕ api#87')
+    expect(text).toContain('Checks failing')
+    expect(text).toContain('You fix CI')
+    expect(text).toContain('Waiting on others (1)')
+    expect(text).toContain('● site#152')
+    expect(text).toContain('Operator merges')
+    expect(text).toContain('OPS-1608 · https://github.com/unsigned-gg/site/pull/152')
+  })
 
-test('the pane shows the ticket, its title, each PR and the link', () => {
-  const i = {
-    ...issue('OPS-1608', 'In Review', 'started'),
-    prs: [
-      { repo: 'unsigned-gg/site', number: 152, state: 'ready' as const, url: 'p/152' },
-      { repo: 'unsigned-gg/unsigned-onboard', number: 7, state: 'merged' as const, url: 'p/7' },
-    ],
+  test('Linear through the old design-plugin server still works', async ($, on) => {
+    fakes(on, 'mcp__plugin_design_linear__')
+    const ran = await $.command.run({ command: 'tickets', args: '' } as never)
+    expect((ran as { text?: string }).text ?? '').toContain('◆ OPS-1608  In Review')
+  })
+
+  test('no Linear server at all says so instead of showing nothing', async ($, on) => {
+    on('tool.call', async () => ({ result: {}, isError: true, text: 'No such tool available' }) as never)
+    on('process.run', async () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }) as never)
+    bottoms(on)
+    const ran = await $.command.run({ command: 'tickets', args: '' } as never)
+    expect((ran as { text?: string }).text ?? '').toContain('Could not reach Linear')
+  })
+
+  test('/tickets expand switches the band to expanded without opening a pane', async ($, on) => {
+    const { seen } = fakes(on, 'mcp__claude_ai_Linear__')
+    const ran = await $.command.run({ command: 'tickets', args: 'expand' } as never)
+    expect((ran as { text?: string }).text).toBe('The band above the prompt is now expanded (cards).')
+    expect(seen.opened).toBe(0)
+  })
+
+  test('the hourly check toasts a real change once, and an unchanged hour not at all', async ($, on) => {
+    const gh = { ...GH }
+    const { clock, seen } = fakes(on, 'mcp__claude_ai_Linear__', gh)
+    await $.session.start({ source: 'startup', cwd: '/tmp' } as never)
+    await clock.settle()
+    expect(seen.toasts).toEqual([])
+    expect(seen.status.at(-1)).toBe('Linear: 1 open · 1 PR needs you')
+    gh['87'] = { ...(GH['87'] as object), statusCheckRollup: [{ name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' }] }
+    await clock.advance(60 * 60 * 1000)
+    expect(seen.toasts).toEqual(['api#87 checks passed, awaiting review · Reviewer acts'])
+    await clock.advance(60 * 60 * 1000)
+    expect(seen.toasts.length).toBe(1)
+  })
+
+  test('the band shares its rows: with a mod drawing beneath and little room, the cards fold to one line', async ($, on) => {
+    const clock = mock.clock(on)
+    void clock
+    mock.store(on)
+    on('ui.toast', async () => ({ value: undefined }) as never)
+    on('ui.status', async () => ({ value: undefined }) as never)
+    on('ui.open', async () => ({ value: { isPlaced: true } }) as never)
+    on('command.register', async () => ({ value: undefined }) as never)
+    // Stands for mesh-toaster: an 8-row drawing beneath this mod.
+    const toaster = { type: 'Box', props: { flexDirection: 'column' }, children: Array.from({ length: 8 }, (_, n) => ({ type: 'Text', props: {}, children: [`toaster row ${n}`] })) }
+    on('ui.render', { component: 'AbovePrompt' }, async () => toaster as never)
+    on('tool.call', async ($, e) => {
+      const tool = String(e.tool)
+      if (tool.endsWith('list_issues')) return { result: ISSUES, text: JSON.stringify(ISSUES) } as never
+      return { result: ATTACH, text: JSON.stringify(ATTACH) } as never
+    })
+    on('process.run', async ($, e) => {
+      const argv = e.argv as readonly string[]
+      if (argv[1] === 'api') return { value: { exitCode: 0, stdout: 'Mark-Hickey\n', stderr: '' } } as never
+      return { value: { exitCode: 0, stdout: JSON.stringify(GH[argv[3] as string]), stderr: '' } } as never
+    })
+    await $.command.run({ command: 'tickets', args: '' } as never)
+    const mount = (maxRows: number) => $.ui.mount({ plugin: 'linear-watch', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows, bodyColumns: 115 }, viewport: { columns: 120, rows: 40 } } as never)
+    const tight = await mount(14)
+    expect(await tight.find({ text: /PR Watch/ })).toBeUndefined()
+    expect(await tight.find({ text: ' FAILING' })).toBeDefined()
+    expect(await tight.find({ text: 'toaster row 7' })).toBeDefined()
+    const roomy = await mount(30)
+    expect(await roomy.find({ text: /PR Watch/ })).toBeDefined()
+    expect(await roomy.find({ text: 'toaster row 7' })).toBeDefined()
+  })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    test(`the band on ${surface}: two cards wide, one card narrow, one line when folded`, async ($, on) => {
+      fakes(on, 'mcp__claude_ai_Linear__')
+      await $.command.run({ command: 'tickets', args: '' } as never)
+      // Room for the cards: a band capped lower folds them (tested above).
+      const props = { hasSurvey: false, isWorking: false, maxRows: 30 }
+      const mount = (columns: number) => $.ui.mount({ plugin: 'linear-watch', surface, component: 'AbovePrompt', props, viewport: { columns, rows: 40 } } as never)
+      const wide = await mount(160)
+      expect(await wide.find({ text: /Linear Watch/ })).toBeDefined()
+      expect(await wide.find({ text: /PR Watch/ })).toBeDefined()
+      expect(await wide.find({ text: '2 pull requests' })).toBeDefined()
+      // The most pressing PR leads: api#87 fails, so its row says so in words, not colour alone.
+      expect(await wide.find({ text: 'FAILING' })).toBeDefined()
+      expect(await wide.find({ text: /CI checks failed/ })).toBeDefined()
+      expect(await wide.find({ text: /Your operator can merge/ })).toBeDefined()
+      expect(await wide.find({ text: /fix the rolematrix comment/ })).toBeDefined()
+      const narrow = await mount(50)
+      expect(await narrow.find({ text: /Linear · ⑂ PRs/ })).toBeDefined()
+      expect(await narrow.find({ text: 'FAILING' })).toBeDefined()
+      await $.command.run({ command: 'tickets', args: 'compact' } as never)
+      const line = await mount(100)
+      expect(await line.find({ text: /PR Watch/ })).toBeUndefined()
+      expect(await line.find({ text: ' FAILING' })).toBeDefined()
+      expect(await line.find({ key: 'lw-band' })).toBeDefined()
+    })
+
+    test(`the PRs pane on ${surface}: expanded shows details, the toggle compacts it`, async ($, on) => {
+      fakes(on, 'mcp__claude_ai_Linear__')
+        await $.command.run({ command: 'prs', args: '' } as never)
+      const pane = await $.ui.mount({ plugin: 'linear-watch', surface, component: 'Pane', requestId: 'linear-prs', props: {}, viewport: { columns: 100, rows: 40 } } as never)
+      expect(await pane.find({ text: /Approved by todie/ })).toBeDefined()
+      expect(await pane.find({ text: /Review requested from allen/ })).toBeDefined()
+      expect(await pane.find({ text: /Blocked by branch rules/ })).toBeDefined()
+      expect(await pane.find({ type: 'Link', text: /lint/ })).toBeDefined()
+      await pane.press({ key: 'lw-toggle' } as never)
+      // Compact keeps the hover card (hidden until pointed at), but drops the detail lines.
+      expect(await pane.find({ text: /Blocked by branch rules/ })).toBeUndefined()
+      expect(await pane.find({ key: 'lw-toggle', text: /Expand/ })).toBeDefined()
+    })
   }
-  expect(paneRows(i, 'Mark-Hickey')).toEqual([
-    '◆ OPS-1608  In Review',
-    '  t OPS-1608',
-    '  ● site#152  ready · operator merges',
-    '  ✓ unsigned-onboard#7  merged',
-    '  u/OPS-1608',
-  ])
 })
 
-test('a ready PR says who merges: you in your own repos, your operator elsewhere', () => {
-  const ready = (repo: string) => ({ repo, number: 1, state: 'ready' as const, url: 'u' })
-  expect(prLabel(ready('Mark-Hickey/claude-mods'), 'Mark-Hickey')).toBe('ready · you merge')
-  expect(prLabel(ready('mark-hickey/claude-mods'), 'Mark-Hickey')).toBe('ready · you merge')
-  expect(prLabel(ready('unsigned-gg/site'), 'Mark-Hickey')).toBe('ready · operator merges')
-  expect(prLabel(ready('Mark-Hickey/claude-mods'), null)).toBe('ready · operator merges')
-  expect(prLabel({ ...ready('unsigned-gg/site'), state: 'merged' }, 'Mark-Hickey')).toBe('merged')
+describe('text views', () => {
+  const ready = prFromGh({ repo: 'unsigned-gg/site', number: 152, url: 'https://github.com/unsigned-gg/site/pull/152' }, GH['152'] as never, 'OPS-1608')
+  const open = [{ id: 'OPS-1608', title: 'fix it', status: 'In Review', statusType: 'started', url: 'https://linear.app/c/issue/OPS-1608', prs: [ready] }]
+
+  test('/tickets text: ticket, title, aligned PR row, link and key', () => {
+    expect(ticketsText(open, 'Mark-Hickey')).toBe(
+      [
+        '◆ OPS-1608  In Review',
+        '  fix it',
+        '  ● site#152  Ready  CI passed  Operator merges',
+        '  https://linear.app/c/issue/OPS-1608',
+        '',
+        'Key:',
+        '  ● Ready: Checks passed, reviews approved, GitHub says it can merge.',
+      ].join('\n'),
+    )
+  })
+
+  test('/prs text with nothing linked says so', () => {
+    expect(prsText([{ ...open[0]!, prs: [] }], 'Mark-Hickey')).toBe('No pull requests are linked to your open Linear tickets.')
+  })
+
+  test('the status line counts PRs that wait on you', () => {
+    expect(statusText(open, 'Mark-Hickey')).toBe('Linear: 1 open')
+    expect(statusText(open, 'unsigned-gg')).toBe('Linear: 1 open · 1 PR needs you')
+  })
+
+  test('mode arguments', () => {
+    expect(modeArg(' Expand ')).toBe('expanded')
+    expect(modeArg('compact')).toBe('compact')
+    expect(modeArg('')).toBeUndefined()
+  })
 })
