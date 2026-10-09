@@ -26,9 +26,23 @@ on others*, *Done*. Each PR card shows:
 
 **`/tickets`** opens the Linear Tickets pane: each ticket as a card with its PRs.
 
-In both panes: `e` expand or compact, `r` refresh, `k` show the key of symbols, `q` or Escape
-close. `/tickets compact` and `/tickets expand` set the view above the prompt. The mod keeps your
-choices between sessions.
+In both panes: `e` expand or compact, `r` refresh, `k` show the key of symbols, `o` open the
+first action that needs you, `q` or Escape close. `/tickets compact` and `/tickets expand` set
+the view above the prompt. The mod keeps your choices between sessions.
+
+## Act from the cards
+
+- **Each next action is a link to where you act.** For example, a failed check links to its log,
+  a merge conflict to the PR's conflicts page, requested changes to the PR's files, and a ticket
+  to Linear. Each action line has a `↗ open` button.
+- **`o` opens the first action that needs you** in your browser. From WSL the mod uses `wslview`
+  or `explorer.exe`, else the desktop's opener. It opens only `https` links, and it gives the
+  link to the opener as an argument, never as shell text.
+- **Ticket and PR names are links** to Linear and to GitHub.
+- **Close-out.** When all PRs of a ticket are merged, the ticket shows "→ Next: You move <id> to
+  Done". `/prs` has a "Tickets to close" section.
+- **Merged PRs fold** to one dim line everywhere.
+- **Cards that need you** have a coloured border and a bold next-action line.
 
 ## Stages: how far each ticket and PR has got
 

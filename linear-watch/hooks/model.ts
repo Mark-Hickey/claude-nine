@@ -528,3 +528,54 @@ export function wrapLines(text: string, columns: number, max: number): string[] 
   kept[max - 1] = fit(`${kept[max - 1]} ${lines.slice(max).join(' ')}`, columns)
   return kept
 }
+
+// --- Actions: where to go to move each ticket and PR forward --------------------------------
+
+export const isDone = (pr: Pr) => pr.state === 'merged' || pr.state === 'closed'
+
+// The page where the next action happens, not just the PR: the failed check's log, GitHub's
+// conflict editor, the changed files a reviewer commented on, or the PR page for everything else.
+export function actionUrl(pr: Pr): string {
+  const base = pr.url.replace(/\/+$/, '')
+  switch (pr.state) {
+    case 'failing':
+      return pr.checks?.find(c => c.outcome === 'failed' && c.url)?.url ?? `${base}/checks`
+    case 'running':
+      return `${base}/checks`
+    case 'conflict':
+      return `${base}/conflicts`
+    case 'changes':
+      return `${base}/files`
+    default:
+      return base
+  }
+}
+
+// One next action: who does it, what, and the page to do it on.
+export type Action = { who: Actor; text: string; url: string; color: string; ticket?: string; pr?: string }
+
+export function prAction(pr: Pr, me: string | null): Action {
+  const a: Action = { who: nextActor(pr, me), text: nextText(pr, me), url: actionUrl(pr), color: PR_LOOK[pr.state].color, pr: prKey(pr) }
+  if (pr.ticket) a.ticket = pr.ticket
+  return a
+}
+
+// A ticket whose linked PRs are all finished, at least one merged, is yours to close in Linear.
+export function ticketAction(i: Issue): Action | undefined {
+  const prs = i.prs ?? []
+  if (prs.length === 0 || i.statusType === 'completed' || i.statusType === 'canceled') return undefined
+  if (!prs.every(isDone) || !prs.some(p => p.state === 'merged')) return undefined
+  return { who: 'you', text: `You move ${i.id} to Done`, url: i.url, color: 'cyan', ticket: i.id }
+}
+
+// Every open action, yours first (PR fixes by urgency, then tickets to close), then the ones
+// others hold. The first is what `o` opens.
+export function allActions(open: Issue[], me: string | null): Action[] {
+  const active = allPrs(open).filter(p => !isDone(p)).sort(byUrgency)
+  const mine = active.filter(p => nextActor(p, me) === 'you').map(p => prAction(p, me))
+  const close = open.flatMap(i => ticketAction(i) ?? [])
+  const others = active.filter(p => nextActor(p, me) !== 'you').map(p => prAction(p, me))
+  return [...mine, ...close, ...others]
+}
+
+export const actionsForYou = (open: Issue[], me: string | null) => allActions(open, me).filter(a => a.who === 'you')

@@ -7,7 +7,7 @@ Each mod is a separate plugin with its own folder and README. Install only the m
 
 | Mod | Version | What it gives you |
 |---|---|---|
-| [**linear-watch**](linear-watch/) | 0.6.0 | Your Linear tickets and their PRs above the prompt. `/tickets` and `/prs` panes with CI, reviews, merge state, stages and the next action. |
+| [**linear-watch**](linear-watch/) | 0.7.0 | Your Linear tickets and their PRs above the prompt. `/tickets` and `/prs` panes with CI, reviews, merge state, stages and the next action, each a link to where you act. |
 | [**mesh-toast**](mesh-toast/) | 0.1.0 | A toast for each new cortex mesh message. |
 | [**mesh-toaster**](mesh-toaster/) | 0.1.0 | A small toaster above the prompt. A toast comes up from it when mesh mail comes. |
 | [**repo-sync**](repo-sync/) | 0.1.0 | Every 14 hours, updates your repos in `~/projects` by fast-forward only, and tells you what changed. |
@@ -143,4 +143,4 @@ mesh-toaster/
 repo-sync/                        bin/repo-sync is the script the mod runs
 ```
 
-Tests: linear-watch 45, mesh-toaster 5, repo-sync 3, mesh-toast 2. All pass.
+Tests: linear-watch 50, mesh-toaster 5, repo-sync 3, mesh-toast 2. All pass.
