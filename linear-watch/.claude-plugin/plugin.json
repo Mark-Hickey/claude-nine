@@ -1,6 +1,6 @@
 {
   "name": "linear-watch",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Checks your assigned Linear tickets hourly: status line count, toast on new or changed tickets, /tickets list and pane",
   "types": "./types/index.d.ts"
 }

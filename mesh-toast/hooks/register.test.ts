@@ -18,7 +18,7 @@ test('parses inbox lines into toasts', () => {
       subject: 'estate rollup — first contact',
     },
   ])
-  expect(toastText(msgs[0])).toBe('📬 Mesh: chris (session-omp-ceres-estate-w4-pt): estate rollup — first contact')
+  expect(toastText(msgs[0])).toBe("🍞 Toast's up! Mesh mail from chris (session-omp-ceres-estate-w4-pt): estate rollup — first contact")
 })
 
 test('empty inbox gives no toasts', () => {

@@ -24,7 +24,7 @@ export function parseInbox(stdout: string): Message[] {
 export function toastText(msg: Message): string {
   const who = msg.from.split('@')[0]
 
-  return `📬 Mesh: ${who} (${msg.peer}): ${msg.subject}`
+  return `🍞 Toast's up! Mesh mail from ${who} (${msg.peer}): ${msg.subject}`
 }
 
 export const register: Register = on => {

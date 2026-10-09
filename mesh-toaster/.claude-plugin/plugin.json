@@ -1,0 +1,1 @@
+{ "name": "mesh-toaster", "version": "0.1.0", "description": "A toaster above the prompt: empty with no mesh mail, toast popping up when mail arrives", "types": "./types/index.d.ts" }
